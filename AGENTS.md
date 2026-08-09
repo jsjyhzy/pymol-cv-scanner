@@ -108,6 +108,20 @@ make clean        # 删除 dist/
 `make dist` 使用 Linux 核心工具（cp/find/tar/gzip）将 `src/` 组装为
 `distance_scan_plugin/` 包并打包，无需 Python 打包辅助脚本。
 
+### CI / 发布（GitHub Actions）
+
+仓库内置工作流 `.github/workflows/build-plugin.yml`（`build-pymol-plugin`）自动执行：
+
+- **推送到 master / PR** – 运行 `make check` → `make dist` → `make test` 并上传
+  tar.gz 为 workflow artifact（回归校验）。
+- **推送标签 `vX.Y.Z`** – 校验 `src/__init__.py` 的 `# Version:` 与标签一致后，
+  执行上述构建并自动创建 GitHub Release，附带
+  `dist/distance_scan_plugin-<版本>.tar.gz`。
+- **workflow_dispatch** – 手动触发构建，仅上传 artifact，不创建 Release。
+
+发布流程：在 feature 分支上修改 `src/__init__.py` 中的 `# Version:` → 合并到
+master → 在 master 打标签 `vX.Y.Z`（本地或 GitHub UI）。
+
 ### 本地调试
 - 可在 `gui.py` 中添加 `if __name__ == "__main__":` 进行独立测试（需模拟 PyMOL 环境），但建议直接在 PyMOL 中测试。
 - 修改 `core.py` 或 `batch_script.py` 后，重启 PyMOL 生效。

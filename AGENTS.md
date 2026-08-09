@@ -115,6 +115,8 @@ make clean        # 删除 dist/
 ### 提交补丁
 - 遵循现有模块划分，保持职责单一。
 - 修改模板 `scan_zipapp_main.py` 时，用 `@@NAME@@` 占位符标记由插件注入的参数，避免 `.format()`/f-string 的括号转义问题。
+- 由 AI 助手生成的提交，应在 commit message 末尾附上：
+  `Co-authored-by: deepseek-v4-flash-free <jsjyhzy@gmail.com>`
 - 若添加新功能，请同步更新本文档。
 
 ---

@@ -1,22 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Utility functions: file encoding, PyMOL selection handling, etc."""
-
-import base64
-import gzip
+"""Utility functions: PyMOL selection handling, etc."""
 
 # PyMOL imports (only needed when running in PyMOL environment)
 try:
     from pymol import cmd
 except ImportError:
     cmd = None
-
-
-def encode_file(file_path):
-    """Read file, compress with gzip, and return base64 encoded string."""
-    with open(file_path, 'rb') as f:
-        data = f.read()
-    compressed = gzip.compress(data, compresslevel=9)
-    return base64.b64encode(compressed).decode('ascii')
 
 
 def get_current_selection_indices():

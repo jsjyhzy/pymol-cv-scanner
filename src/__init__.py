@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# Name: Distance Constrained Minimization
+# Version: 1.0.0
+# Description: Distance-constrained energy minimization scan between two atom groups using OpenMM.
+# Author: huzheyang
 """PyMOL plugin entry point."""
 
 from pymol.plugins import addmenuitem

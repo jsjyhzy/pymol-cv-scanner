@@ -1,38 +1,65 @@
 # -*- coding: utf-8 -*-
 """OpenMM calculation core: CV computation and scanning."""
 
-import numpy as np
-import openmm as mm
-from openmm import unit
-from openmm.app import AmberPrmtopFile, PDBFile, Simulation
+# OpenMM (and NumPy) are only required for local scanning. Keep their import
+# optional so the plugin can still be loaded and used to generate batch
+# scripts on machines where only PyMOL is installed.
+try:
+    import numpy as np
+    import openmm as mm
+    from openmm import unit
+    from openmm.app import AmberPrmtopFile, PDBFile, Simulation
+    OPENMM_AVAILABLE = True
+except ImportError:
+    np = None
+    mm = None
+    unit = None
+    AmberPrmtopFile = None
+    PDBFile = None
+    Simulation = None
+    OPENMM_AVAILABLE = False
+
+
+def _require_openmm():
+    if not OPENMM_AVAILABLE:
+        raise RuntimeError(
+            "OpenMM is not installed, so local scanning is unavailable. "
+            "You can still generate a batch script and run it on a machine "
+            "that has OpenMM installed."
+        )
 
 
 def scan_cv_to_file(prmtop_file, pdb_file, group1_indices, group2_indices,
                     start_dist, end_dist, nwindows, force_constant,
-                    tolerance, max_iter, output_file, progress_queue=None):
+                    tolerance, max_iter, output_file, progress_queue=None,
+                    implicit_solvent=False):
     """
     Perform constrained minimization and write a multi‑model PDB to output_file.
     Runs in a separate process.
     progress_queue receives the current window index (1‑based) if provided.
+    implicit_solvent: use the OBC2 implicit solvent model (forces NoCutoff).
     """
+    _require_openmm()
     prmtop = AmberPrmtopFile(prmtop_file)
     pdb = PDBFile(pdb_file)
     n_atoms = prmtop.topology.getNumAtoms()
 
-    # Periodicity
+    # Periodicity. Implicit solvent requires NoCutoff (OBC2 is incompatible
+    # with periodic PME), so the box is ignored in that case.
     box_vectors = pdb.topology.getPeriodicBoxVectors()
-    if box_vectors is not None:
-        nonbondedMethod = mm.app.PME
-        nonbondedCutoff = 1.0 * unit.nanometer
-    else:
+    if implicit_solvent or box_vectors is None:
         nonbondedMethod = mm.app.NoCutoff
         nonbondedCutoff = None
+    else:
+        nonbondedMethod = mm.app.PME
+        nonbondedCutoff = 1.0 * unit.nanometer
 
     system = prmtop.createSystem(
         nonbondedMethod=nonbondedMethod,
         nonbondedCutoff=nonbondedCutoff,
         constraints=mm.app.HBonds,
-        rigidWater=False
+        rigidWater=False,
+        implicitSolvent=mm.app.OBC2 if implicit_solvent else None
     )
 
     # Centroid force
@@ -56,40 +83,39 @@ def scan_cv_to_file(prmtop_file, pdb_file, group1_indices, group2_indices,
         simulation.context.setPeriodicBoxVectors(*box_vectors)
 
     targets = np.linspace(start_dist, end_dist, nwindows)
-    all_coords = []
 
-    for i, target in enumerate(targets):
-        simulation.context.setParameter("target", target * unit.nanometer)
-        simulation.minimizeEnergy(tolerance=tolerance, maxIterations=max_iter)
-        state = simulation.context.getState(getPositions=True)
-        pos = state.getPositions(asNumpy=True).value_in_unit(unit.nanometer)
-        # Truncate if extra particles exist
-        if len(pos) > n_atoms:
-            print(f"Warning: Context has {len(pos)} particles, topology has {n_atoms} atoms. Truncating.")
-            pos = pos[:n_atoms]
-        elif len(pos) < n_atoms:
-            raise RuntimeError(f"Context has fewer particles ({len(pos)}) than topology ({n_atoms}).")
-        all_coords.append(pos)
-        if progress_queue is not None:
-            progress_queue.put(i + 1)
-
-    # Write multi‑model PDB one model at a time
+    # Write multi‑model PDB one model at a time (streaming, to bound memory)
     with open(output_file, 'w') as f:
-        for model_idx, pos in enumerate(all_coords):
-            f.write(f"MODEL     {model_idx+1}\n")
+        for i, target in enumerate(targets):
+            simulation.context.setParameter("target", target * unit.nanometer)
+            simulation.minimizeEnergy(tolerance=tolerance, maxIterations=max_iter)
+            state = simulation.context.getState(getPositions=True)
+            pos = state.getPositions(asNumpy=True).value_in_unit(unit.nanometer)
+            # Truncate if extra particles exist
+            if len(pos) > n_atoms:
+                print(f"Warning: Context has {len(pos)} particles, topology has {n_atoms} atoms. Truncating.")
+                pos = pos[:n_atoms]
+            elif len(pos) < n_atoms:
+                raise RuntimeError(f"Context has fewer particles ({len(pos)}) than topology ({n_atoms}).")
+            f.write(f"MODEL     {i+1}\n")
             PDBFile.writeModel(prmtop.topology, pos * unit.nanometer, f, keepIds=True)
             f.write("ENDMDL\n")
+            if progress_queue is not None:
+                progress_queue.put(i + 1)
 
 
-def compute_cv_value(prmtop_file, pdb_file, group1_indices, group2_indices):
+def compute_cv_value(prmtop_file, pdb_file, group1_indices, group2_indices,
+                     implicit_solvent=False):
     """Compute centroid distance (nm) for given coordinates (runs in main thread)."""
+    _require_openmm()
     prmtop = AmberPrmtopFile(prmtop_file)
     pdb = PDBFile(pdb_file)
 
     system = prmtop.createSystem(
         nonbondedMethod=mm.app.NoCutoff,
         constraints=None,
-        rigidWater=False
+        rigidWater=False,
+        implicitSolvent=mm.app.OBC2 if implicit_solvent else None
     )
     centroid_force = mm.CustomCentroidBondForce(2, "distance(g1, g2)")
     centroid_force.addGroup(group1_indices)

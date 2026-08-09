@@ -8,10 +8,11 @@ import multiprocessing as mp
 from PyQt5 import QtCore, QtWidgets
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
                              QGroupBox, QLabel, QLineEdit, QPushButton,
-                             QProgressBar, QMessageBox, QFileDialog, QFrame)
+                             QProgressBar, QMessageBox, QFileDialog, QFrame,
+                             QCheckBox)
 
-from .core import scan_cv_to_file, compute_cv_value
-from .batch_script import create_script_content
+from .core import OPENMM_AVAILABLE, scan_cv_to_file, compute_cv_value
+from .batch_script import create_batch_zipapp
 from .utils import get_current_selection_indices
 
 
@@ -22,6 +23,7 @@ class DistanceScanPlugin(QDialog):
         self.setWindowFlags(QtCore.Qt.Window)
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
         self.setMinimumSize(600, 650)
+        self.openmm_available = OPENMM_AVAILABLE
         self.init_ui()
 
         self.group1_indices = []
@@ -98,10 +100,10 @@ class DistanceScanPlugin(QDialog):
         cv_layout = QHBoxLayout()
         cv_group.setLayout(cv_layout)
         self.cv_label = QLabel("Current CV: not computed")
-        btn_compute = QPushButton("Compute CV")
-        btn_compute.clicked.connect(self.compute_cv)
+        self.btn_compute = QPushButton("Compute CV")
+        self.btn_compute.clicked.connect(self.compute_cv)
         cv_layout.addWidget(self.cv_label)
-        cv_layout.addWidget(btn_compute)
+        cv_layout.addWidget(self.btn_compute)
         main_layout.addWidget(cv_group)
 
         # Scan parameters
@@ -115,6 +117,7 @@ class DistanceScanPlugin(QDialog):
         self.force_edit = QLineEdit("5000")
         self.tol_edit = QLineEdit("1e-4")
         self.iter_edit = QLineEdit("2000")
+        self.implicit_check = QCheckBox("Use implicit solvent (OBC2)")
 
         scan_layout.addWidget(QLabel("Start (nm):"), 0, 0)
         scan_layout.addWidget(self.start_edit, 0, 1)
@@ -128,6 +131,7 @@ class DistanceScanPlugin(QDialog):
         scan_layout.addWidget(self.tol_edit, 1, 3)
         scan_layout.addWidget(QLabel("Max iterations:"), 2, 2)
         scan_layout.addWidget(self.iter_edit, 2, 3)
+        scan_layout.addWidget(self.implicit_check, 3, 0, 1, 4)
 
         main_layout.addWidget(scan_group)
 
@@ -156,6 +160,13 @@ class DistanceScanPlugin(QDialog):
         self.status_label = QLabel("Ready")
         self.status_label.setFrameStyle(QFrame.StyledPanel | QFrame.Sunken)
         main_layout.addWidget(self.status_label)
+
+        if not self.openmm_available:
+            self.run_button.setEnabled(False)
+            self.btn_compute.setEnabled(False)
+            self.status_label.setText(
+                "OpenMM is not installed: Run Scan and Compute CV are disabled. "
+                "You can still generate a batch script.")
 
     # Slots
     def browse_prmtop(self):
@@ -235,7 +246,8 @@ class DistanceScanPlugin(QDialog):
                 self.prmtop_edit.text().strip(),
                 self.pdb_edit.text().strip(),
                 self.group1_indices,
-                self.group2_indices
+                self.group2_indices,
+                self.implicit_check.isChecked()
             )
             self.current_cv = cv
             self.cv_label.setText(f"Current CV: {cv:.4f} nm")
@@ -292,7 +304,8 @@ class DistanceScanPlugin(QDialog):
             tolerance,
             max_iter,
             out_file,
-            self.progress_queue
+            self.progress_queue,
+            self.implicit_check.isChecked()
         )
 
         self.process = mp.Process(target=scan_cv_to_file, args=args)
@@ -371,29 +384,30 @@ class DistanceScanPlugin(QDialog):
             QMessageBox.critical(self, "Invalid Windows", "Number of windows must be at least 2.")
             return
 
-        default_name = "scan_script.py"
+        default_name = "scan_script.pyz"
         script_path, _ = QFileDialog.getSaveFileName(self, "Save Batch Script", default_name,
-                                                     "Python scripts (*.py);;All files (*.*)")
+                                                     "Python zipapp (*.pyz);;All files (*.*)")
         if not script_path:
             return
 
-        script_content = create_script_content(
-            self.prmtop_edit.text().strip(),
-            self.pdb_edit.text().strip(),
-            self.group1_indices,
-            self.group2_indices,
-            start, end, nwindows,
-            force_const, tolerance, max_iter
-        )
-
         try:
-            with open(script_path, 'w') as f:
-                f.write(script_content)
+            create_batch_zipapp(
+                script_path,
+                self.prmtop_edit.text().strip(),
+                self.pdb_edit.text().strip(),
+                self.group1_indices,
+                self.group2_indices,
+                start, end, nwindows,
+                force_const, tolerance, max_iter,
+                self.implicit_check.isChecked()
+            )
             QMessageBox.information(self, "Success",
                                     f"Batch script saved to:\n{script_path}\n\n"
-                                    "The script embeds all input files (compressed).\n"
-                                    "Run it on any machine with:\n"
-                                    "python scan_script.py\n\n"
+                                    "Run it on any machine with OpenMM installed:\n"
+                                    "python scan_script.pyz\n\n"
+                                    "The prmtop and pdb are packed inside the app.\n"
+                                    "Parameters can be overridden from the command line "
+                                    "(run with --help for details).\n"
                                     "The output will be saved as 'scan_results.pdb'.")
             self.status_label.setText(f"Script saved: {os.path.basename(script_path)}")
         except Exception as e:
